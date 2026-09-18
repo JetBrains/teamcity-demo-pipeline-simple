@@ -7,3 +7,5 @@ This repository contains a simple TeamCity demo Pipeline which showcases how Tea
  - Sharing files between jobs
  - Publishing file artifact to the Pipeline
  - Test reporting and history
+
+The repository doesn't have any source code, so the Pipeline relies on the service messages and mock artifacts. 

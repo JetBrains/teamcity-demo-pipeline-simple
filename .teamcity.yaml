@@ -63,12 +63,6 @@ jobs:
     # always execute.
     allow-reuse: true
 
-    # This demo has no source code to check out, so VCS checkout is disabled.
-    # Delete this block in a real pipeline to check out your repository.
-    repositories:
-      - main:
-          enabled: false
-
     steps:
       - type: script
         name: Compile & version
@@ -120,10 +114,6 @@ jobs:
     # Wait for `build` to finish first.
     dependencies:
       - build
-
-    repositories:
-      - main:
-          enabled: false
 
     steps:
       - type: script
@@ -177,10 +167,6 @@ jobs:
       # leave this off so a red test run blocks the package.
       - unit_tests:
           run-job-if-upstream-fails: true
-
-    repositories:
-      - main:
-          enabled: false
 
     steps:
       - type: script
