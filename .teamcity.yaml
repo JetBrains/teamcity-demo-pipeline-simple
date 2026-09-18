@@ -1,0 +1,201 @@
+# ============================================================================
+#  TeamCity Demo Pipeline
+# ----------------------------------------------------------------------------
+#  A self-contained sample pipeline that needs no source code and no build
+#  tools: every step is a shell script that fakes a real build. Use it as a
+#  starting point and as a tour of what TeamCity gives you out of the box:
+#
+#    * jobs with dependencies, running in parallel where possible
+#    * artifacts passed from one job to the next
+#    * test reporting and test history via service messages
+#    * build number / parameter overrides at runtime
+#    * custom build statistics
+#
+#  Drop this file at the root of your repository as `.teamcity.yaml`.
+# ============================================================================
+
+# Schema version of this file. Keep it at 1.
+version: 1
+
+# ----------------------------------------------------------------------------
+#  Pipeline parameters
+# ----------------------------------------------------------------------------
+#  Available to every job and referenced as %parameter.name%.
+#  The `env.` prefix also exports them as environment variables to the scripts,
+#  so `$APP_NAME` works inside the shell as well as `%env.APP_NAME%`.
+# ----------------------------------------------------------------------------
+parameters:
+  env.APP_NAME: acme-demo-app
+  # Seed value only - the `build` job overwrites this at runtime with the
+  # full version (see the `setParameter` service message below).
+  env.version: '1.0'
+
+# ----------------------------------------------------------------------------
+#  Pipeline output parameters
+# ----------------------------------------------------------------------------
+#  Values published by the pipeline as a whole. Anything a downstream pipeline
+#  or an API consumer needs to read should be exposed here.
+#  Syntax: %job.<job-id>.<parameter-name>%
+# ----------------------------------------------------------------------------
+output-parameters:
+  released-version: '%job.build.version%'
+
+# ----------------------------------------------------------------------------
+#  Jobs
+# ----------------------------------------------------------------------------
+#  Jobs run in parallel unless linked by `dependencies`. Here:
+#
+#      build  ->  unit_tests
+#         \              \
+#          \              v
+#           +--------->  package
+# ----------------------------------------------------------------------------
+jobs:
+
+  # ==========================================================================
+  #  build - compile the app and stamp it with a version
+  # ==========================================================================
+  build:
+    name: Build
+
+    # Skip this job entirely if an identical build already ran (same inputs,
+    # same revision). Speeds up repeated runs; turn it off for jobs that must
+    # always execute.
+    allow-reuse: true
+
+    # This demo has no source code to check out, so VCS checkout is disabled.
+    # Delete this block in a real pipeline to check out your repository.
+    repositories:
+      - main:
+          enabled: false
+
+    steps:
+      - type: script
+        name: Compile & version
+        script-content: |-
+          VERSION="1.0.%build.number%"
+
+          # Service messages let a script talk back to TeamCity.
+          # `buildNumber` renames this build in the UI, so it shows up as
+          # "1.0.42" instead of the bare counter "42".
+          echo "##teamcity[buildNumber '$VERSION']"
+
+          # Stand-in for a real compile step.
+          mkdir -p build
+          echo "fake binary for %env.APP_NAME% $VERSION" > build/app.bin
+          echo "$VERSION" > build/version.txt
+
+          # Overwrite the pipeline parameter for the rest of this build, so
+          # later jobs and the output parameter see the resolved version.
+          echo "##teamcity[setParameter name='env.version' value='$VERSION']"
+
+    # ------------------------------------------------------------------------
+    #  Artifacts produced by this job.
+    #    publish-artifact  - keep the file, downloadable from the build page
+    #    share-with-jobs   - make it available to dependent jobs
+    # ------------------------------------------------------------------------
+    files-publication:
+      - path: build/app.bin
+        publish-artifact: true
+        share-with-jobs: true
+      - path: build/version.txt
+        publish-artifact: true
+        share-with-jobs: true
+
+    # Job-level output parameter, surfaced to the pipeline as
+    # %job.build.version% (see `output-parameters` above).
+    parameters:
+      version: '%env.version%'
+
+  # ==========================================================================
+  #  unit_tests - run the suite: 12 tests across 3 suites
+  # ==========================================================================
+  #  One test is deliberately failing. That is the point: it shows how
+  #  TeamCity groups failures, remembers them across builds, and tells a new
+  #  failure apart from a known one.
+  # ==========================================================================
+  unit_tests:
+    name: Tests - expected to fail
+
+    # Wait for `build` to finish first.
+    dependencies:
+      - build
+
+    repositories:
+      - main:
+          enabled: false
+
+    steps:
+      - type: script
+        name: Run unit tests
+        script-content: |-
+          echo "Running unit tests for %env.APP_NAME%"
+
+          # 3 suites x 4 cases = 12 tests. TeamCity reads the suite prefix in
+          # the test name and groups the results in the UI accordingly.
+          for s in 1 2 3; do
+            for i in 1 2 3 4; do
+              TEST="unit.SampleSuite$s.test_case_$i"
+
+              # testStarted / testFinished delimit one test; everything the
+              # script prints in between is attached to that test.
+              echo "##teamcity[testStarted name='$TEST' captureStandardOutput='true']"
+
+              echo "checking invariant $i..."
+
+              # The one intentional failure: suite 2, case 3.
+              if [ "$s" = "2" ] && [ "$i" = "3" ]; then
+                echo "##teamcity[testStdErr name='$TEST' out='TeamCity captures test failures and keeps their history']"
+                echo "##teamcity[testFailed type='comparisonFailure' name='$TEST' message='expected test failure' details='message and stack trace' expected='expected value' actual='actual value']"
+              fi
+
+              # `duration` is in milliseconds and feeds the test duration
+              # charts and the slow-test report.
+              echo "##teamcity[testFinished name='$TEST' duration='120']"
+            done
+          done
+
+    # Always re-run: a test job should never be served from a previous result.
+    allow-reuse: false
+
+  # ==========================================================================
+  #  package - bundle the build output into a distributable archive
+  # ==========================================================================
+  package:
+    name: Package Artifact
+
+    dependencies:
+      # Pull the shared artifacts from `build` into this job's working
+      # directory, so the script can read them straight off disk.
+      - build:
+          files:
+            - build/app.bin
+            - build/version.txt
+
+      # Package even when the tests fail. That keeps the demo producing an
+      # artifact end to end; in a real release pipeline you would usually
+      # leave this off so a red test run blocks the package.
+      - unit_tests:
+          run-job-if-upstream-fails: true
+
+    repositories:
+      - main:
+          enabled: false
+
+    steps:
+      - type: script
+        name: Package
+        script-content: |-
+          VERSION=$(cat build/version.txt)
+          mkdir -p dist
+          cp build/app.bin "dist/%env.APP_NAME%-$VERSION.pkg"
+
+          # Custom build statistic. TeamCity charts it over time, so you can
+          # watch the package size trend and alarm on regressions.
+          echo "##teamcity[buildStatisticValue key='PackageSizeBytes' value='2048']"
+
+    # Publish the whole directory; it lands as `dist/` on the build's
+    # Artifacts tab.
+    files-publication:
+      - path: dist
+        publish-artifact: true
